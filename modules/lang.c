@@ -50,6 +50,28 @@ gjs_lang_seal(JSContext *cx,
     return JS_TRUE;
 }
 
+static JSBool
+gjs_pointer_string(JSContext *cx,
+                   uintN      argc,
+                   jsval     *vp)
+{
+    jsval *argv = JS_ARGV(cx, vp);
+    gchar *strval;
+    jsval retval;
+    JSBool ret;
+    JSObject *ptr;
+
+    ptr = JSVAL_TO_OBJECT(argv[0]);
+
+    strval = g_strdup_printf("%p", ptr);
+
+    ret = gjs_string_from_utf8(cx, strval, -1, &retval);
+    if (ret)
+        JS_SET_RVAL(context, vp, retval);
+    g_free(strval);
+    return ret;
+}
+
 JSBool
 gjs_define_lang_stuff(JSContext      *context,
                       JSObject      *module_obj)
@@ -57,6 +79,12 @@ gjs_define_lang_stuff(JSContext      *context,
     if (!JS_DefineFunction(context, module_obj,
                            "seal",
                            (JSNative)gjs_lang_seal,
+                           1, GJS_MODULE_PROP_FLAGS))
+        return JS_FALSE;
+
+    if (!JS_DefineFunction(context, module_obj,
+                           "pointer_string",
+                           (JSNative)gjs_pointer_string,
                            1, GJS_MODULE_PROP_FLAGS))
         return JS_FALSE;
 
