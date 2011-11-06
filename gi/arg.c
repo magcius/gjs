@@ -2431,8 +2431,9 @@ gjs_value_from_g_argument (JSContext  *context,
 
             if (interface_type == GI_INFO_TYPE_STRUCT || interface_type == GI_INFO_TYPE_BOXED) {
                 JSObject *obj;
+
                 obj = gjs_boxed_from_c_struct(context, (GIStructInfo *)interface_info, arg->v_pointer,
-                                              GJS_BOXED_CREATION_NONE);
+                                              g_type_is_a(gtype, G_TYPE_VARIANT) ? GJS_BOXED_CREATION_NONE : GJS_BOXED_CREATION_NO_COPY);
                 if (obj)
                     value = OBJECT_TO_JSVAL(obj);
 
@@ -2708,8 +2709,7 @@ gjs_g_arg_release_internal(JSContext  *context,
                 /* G_TYPE_VALUE is-a G_TYPE_BOXED, but we special case it */
                 g_boxed_free(gtype, arg->v_pointer);
             } else if (g_type_is_a(gtype, G_TYPE_BOXED)) {
-                if (transfer != TRANSFER_IN_NOTHING)
-                    g_boxed_free(gtype, arg->v_pointer);
+                /* We don't free boxed types. */
             } else if (g_type_is_a(gtype, G_TYPE_VARIANT)) {
                 if (transfer != TRANSFER_IN_NOTHING)
                     g_variant_unref (arg->v_pointer);

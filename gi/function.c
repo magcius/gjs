@@ -1101,37 +1101,6 @@ release:
             if (arg_failed)
                 postinvoke_release_failed = TRUE;
 
-            /* For caller-allocates, what happens here is we allocate
-             * a structure above, then gjs_value_from_g_argument calls
-             * g_boxed_copy on it, and takes ownership of that.  So
-             * here we release the memory allocated above.  It would be
-             * better to special case this and directly hand JS the boxed
-             * object and tell gjs_boxed it owns the memory, but for now
-             * this works OK.  We could also alloca() the structure instead
-             * of slice allocating.
-             */
-            if (g_arg_info_is_caller_allocates(&arg_info)) {
-                GITypeTag type_tag;
-                GIBaseInfo* interface_info;
-                GIInfoType interface_type;
-                gsize size;
-
-                type_tag = g_type_info_get_tag(&arg_type_info);
-                g_assert(type_tag == GI_TYPE_TAG_INTERFACE);
-                interface_info = g_type_info_get_interface(&arg_type_info);
-                interface_type = g_base_info_get_type(interface_info);
-                if (interface_type == GI_INFO_TYPE_STRUCT) {
-                    size = g_struct_info_get_size((GIStructInfo*)interface_info);
-                } else if (interface_type == GI_INFO_TYPE_UNION) {
-                    size = g_union_info_get_size((GIUnionInfo*)interface_info);
-                } else {
-                    g_assert_not_reached();
-                }
-
-                g_slice_free1(size, out_arg_cvalues[c_arg_pos].v_pointer);
-                g_base_info_unref((GIBaseInfo*)interface_info);
-            }
-
             /* Free GArgument, the jsval should have ref'd or copied it */
             transfer = g_arg_info_get_ownership_transfer(&arg_info);
             if (!arg_failed) {
