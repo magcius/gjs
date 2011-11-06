@@ -38,6 +38,13 @@ const GObjectMeta = new Lang.Class({
         this.parent(params);
 
         Gi.register_type(params.Extends.prototype, this.prototype, params.Name);
+
+        for (let prop in params) {
+            let value = this.prototype[prop];
+            if (typeof value === 'function' && prop.slice(0, 3) == 'do_') {
+                Gi.hook_up_vfunc(this.prototype, prop.slice(3), value);
+            }
+        }
     },
 
     _isValidClass: function(klass) {
