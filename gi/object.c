@@ -138,7 +138,10 @@ object_instance_get_prop(JSContext *context,
                      "Get prop '%s' hook obj %p priv %p", name, obj, priv);
 
     if (priv == NULL) {
-        ret = JS_FALSE; /* wrong class passed in */
+        /* We won't have a private until the initializer is called, so
+         * don't mark a call to _init() an error. */
+        if (!g_str_equal(name, "_init"))
+            ret = JS_FALSE;
         goto out;
     }
     if (priv->gobj == NULL) /* prototype, not an instance. */
@@ -718,6 +721,7 @@ init_object_private (JSContext *context,
         goto out;
     }
 
+    priv->gtype = proto_priv->gtype;
     priv->info = proto_priv->info;
     g_base_info_ref( (GIBaseInfo*) priv->info);
 
@@ -767,9 +771,12 @@ manage_js_gobject (JSContext      *context,
     g_object_unref(priv->gobj);
 }
 
-GJS_NATIVE_CONSTRUCTOR_DECLARE(object_instance)
+static JSBool
+object_instance_init (JSContext *context,
+                      JSObject **object,
+                      uintN      argc,
+                      jsval     *argv)
 {
-    GJS_NATIVE_CONSTRUCTOR_VARIABLES(object_instance)
     ObjectInstance *priv;
     GType gtype;
     GParameter *params;
@@ -777,11 +784,9 @@ GJS_NATIVE_CONSTRUCTOR_DECLARE(object_instance)
     GTypeQuery query;
     JSObject *old_jsobj;
 
-    GJS_NATIVE_CONSTRUCTOR_PRELUDE(object_instance);
+    priv = init_object_private(context, *object);
 
-    priv = init_object_private(context, object);
-
-    gtype = g_registered_type_info_get_g_type( (GIRegisteredTypeInfo*) priv->info);
+    gtype = priv->gtype;
     if (gtype == G_TYPE_NONE) {
         gjs_throw(context,
                   "No GType for object '%s'???",
@@ -789,7 +794,7 @@ GJS_NATIVE_CONSTRUCTOR_DECLARE(object_instance)
         return JS_FALSE;
     }
 
-    if (!object_instance_props_to_g_parameters(context, object, argc, argv,
+    if (!object_instance_props_to_g_parameters(context, *object, argc, argv,
                                                gtype,
                                                &params, &n_params)) {
         return JS_FALSE;
@@ -809,7 +814,7 @@ GJS_NATIVE_CONSTRUCTOR_DECLARE(object_instance)
          * we're not actually using it, so just let it get collected. Avoiding
          * this would require a non-trivial amount of work.
          * */
-        object = old_jsobj;
+        *object = old_jsobj;
         g_object_unref(priv->gobj); /* We already own a reference */
         priv->gobj = NULL;
         goto out;
@@ -833,7 +838,7 @@ GJS_NATIVE_CONSTRUCTOR_DECLARE(object_instance)
         /* we should already have a ref */
     }
 
-    manage_js_gobject(context, object, priv);
+    manage_js_gobject(context, *object, priv);
 
     gjs_debug_lifecycle(GJS_DEBUG_GOBJECT,
                         "JSObject created with GObject %p %s",
@@ -843,9 +848,17 @@ GJS_NATIVE_CONSTRUCTOR_DECLARE(object_instance)
                                g_base_info_get_name ( (GIBaseInfo*) priv->info) ));
 
  out:
-    GJS_NATIVE_CONSTRUCTOR_FINISH(object_instance);
-
     return JS_TRUE;
+}
+
+GJS_NATIVE_CONSTRUCTOR_DECLARE(object_instance)
+{
+    GJS_NATIVE_CONSTRUCTOR_VARIABLES(object_instance)
+    JSBool ret;
+    GJS_NATIVE_CONSTRUCTOR_PRELUDE(object_instance);
+    ret = object_instance_init(context, &object, argc, argv);
+    GJS_NATIVE_CONSTRUCTOR_FINISH(object_instance);
+    return ret;
 }
 
 static void
@@ -1228,11 +1241,25 @@ static struct JSClass gjs_object_instance_class = {
     JSCLASS_NO_OPTIONAL_MEMBERS
 };
 
+static JSBool
+init_func (JSContext *context,
+           uintN      argc,
+           jsval     *vp)
+{
+    jsval *argv = JS_ARGV(context, vp);
+    JSObject *obj = JS_THIS_OBJECT(context, vp);
+
+    JS_SET_RVAL(context, vp, JSVAL_VOID);
+
+    return object_instance_init(context, &obj, argc, argv);
+}
+
 static JSPropertySpec gjs_object_instance_proto_props[] = {
     { NULL }
 };
 
 static JSFunctionSpec gjs_object_instance_proto_funcs[] = {
+    { "_init", (JSNative)init_func, 0, 0 },
     { "connect", (JSNative)connect_func, 0, 0 },
     { "connect_after", (JSNative)connect_after_func, 0, 0 },
     { "disconnect", (JSNative)disconnect_func, 0, 0 },
@@ -1493,6 +1520,9 @@ gjs_define_object_class(JSContext     *context,
     JS_DefineProperty(context, constructor, "$gtype", value,
                       NULL, NULL, JSPROP_PERMANENT);
 
+    value = JSVAL_TRUE;
+    JS_SetProperty(context, constructor, "$isGTypeWrapper", &value);
+
     if (prototype_p)
         *prototype_p = prototype;
 
@@ -1645,3 +1675,89 @@ gjs_g_object_from_object(JSContext    *context,
 
     return priv->gobj;
 }
+
+static JSBool
+gjs_register_type(JSContext *cx,
+                  uintN      argc,
+                  jsval     *vp)
+{
+    jsval *argv = JS_ARGV(cx, vp);
+    jsval gtype;
+    gchar *name;
+    JSObject *parent, *object;
+    GType instance_type, parent_type;
+    GTypeQuery query;
+    ObjectInstance *parent_priv, *priv;
+    GTypeInfo type_info = {
+        0, /* class_size */
+
+	(GBaseInitFunc) NULL,
+	(GBaseFinalizeFunc) NULL,
+
+	(GClassInitFunc) NULL,
+	(GClassFinalizeFunc) NULL,
+	NULL, /* class_data */
+
+	0,    /* instance_size */
+	0,    /* n_preallocs */
+	(GInstanceInitFunc) NULL,
+    };
+
+    JS_BeginRequest(cx);
+
+    if (argc != 3)
+        return JS_FALSE;
+
+    if (!JSVAL_IS_OBJECT(argv[0]) ||
+        !JSVAL_IS_OBJECT(argv[1]) ||
+        !JSVAL_IS_STRING(argv[2]))
+        return JS_FALSE;
+
+    parent = JSVAL_TO_OBJECT(argv[0]);
+    object = JSVAL_TO_OBJECT(argv[1]);
+    name = gjs_string_get_ascii(cx, argv[2]);
+
+    if (!parent)
+        return JS_FALSE;
+
+    parent_priv = priv_from_js(cx, parent);
+
+    if (!parent_priv)
+        return JS_FALSE;
+
+    parent_type = parent_priv->gtype;
+
+    g_type_query(parent_type, &query);
+    type_info.class_size = query.class_size;
+    type_info.instance_size = query.instance_size;
+
+    instance_type = g_type_register_static(parent_type,
+                                           name,
+                                           &type_info,
+                                           0);
+
+    priv = g_slice_new0(ObjectInstance);
+    priv->info = parent_priv->info;
+    priv->gtype = instance_type;
+
+    JS_SetPrivate(cx, object, priv);
+
+    JS_EndRequest(cx);
+
+    return JS_TRUE;
+}
+
+static JSBool
+gjs_define_stuff(JSContext *context,
+                    JSObject  *module_obj)
+{
+    if (!JS_DefineFunction(context, module_obj,
+                           "register_type",
+                           (JSNative)gjs_register_type,
+                           3, GJS_MODULE_PROP_FLAGS))
+        return JS_FALSE;
+
+    return JS_TRUE;
+}
+
+GJS_REGISTER_NATIVE_MODULE("_gi", gjs_define_stuff)
