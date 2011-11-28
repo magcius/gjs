@@ -230,4 +230,52 @@ function testGType() {
     assertEquals(GObject.TYPE_INT, GIMarshallingTests.gtype_inout(GObject.TYPE_NONE));
 }
 
+const VFuncTester = new Lang.Class({
+    Name: 'VFuncTester',
+    Extends: GIMarshallingTests.Object,
+
+    do_vfunc_return_value_only: function(obj) {
+        return 42;
+    },
+
+    do_vfunc_one_out_parameter: function(obj) {
+        return 43;
+    },
+
+    do_vfunc_multiple_out_parameters: function(obj) {
+        return [44, 45];
+    },
+
+    do_vfunc_return_value_and_one_out_parameter: function(obj) {
+        return [46, 47];
+    },
+
+    do_vfunc_return_value_and_multiple_out_parameters: function(obj) {
+        return [48, 49, 50];
+    }
+});
+
+function testVFuncs() {
+    let tester = new VFuncTester();
+    let a, b, c;
+    a = tester.vfunc_return_value_only();
+    assertEquals(42, a);
+
+    a = tester.vfunc_one_out_parameter();
+    assertEquals(43, a);
+
+    [a, b] = tester.vfunc_multiple_out_parameters();
+    assertEquals(44, a);
+    assertEquals(45, b);
+
+    [a, b] = tester.vfunc_return_value_and_one_out_parameter();
+    assertEquals(46, a);
+    assertEquals(47, b);
+
+    [a, b, c] = tester.vfunc_return_value_and_multiple_out_parameters();
+    assertEquals(48, a);
+    assertEquals(49, b);
+    assertEquals(50, c);
+}
+
 gjstestRun();
