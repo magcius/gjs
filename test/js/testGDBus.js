@@ -1,6 +1,7 @@
 // application/javascript;version=1.8
 const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
+const Lang = imports.lang;
 const Mainloop = imports.mainloop;
 
 /* The methods list with their signatures.
@@ -20,7 +21,6 @@ var TestIface = <interface name="org.gnome.gjs.Test">
     <arg type="a{sv}" direction="in"/>
     <arg type="a{sv}" direction="out"/>
 </method>
-<method name="thisDoesNotExist"/>
 <method name="noInParameter">
     <arg type="s" direction="out"/>
 </method>
@@ -81,21 +81,19 @@ var TestIface = <interface name="org.gnome.gjs.Test">
 <property name="PropReadWrite" type="v" access="readwrite" />
 </interface>
 
-/* Test is the actual object exporting the dbus methods */
-function Test() {
-    this._init();
-}
-
 const PROP_READ_WRITE_INITIAL_VALUE = 58;
 const PROP_WRITE_ONLY_INITIAL_VALUE = "Initial value";
 
-Test.prototype = {
-    _init: function(){
+log('about to build a Test class');
+const Test = new Gio.DBusImplementerClass({
+    Name: 'Test',
+    Interface: TestIface,
+
+    _init: function() {
+	this.parent();
+
         this._propWriteOnly = PROP_WRITE_ONLY_INITIAL_VALUE;
         this._propReadWrite = PROP_READ_WRITE_INITIAL_VALUE;
-
-	this._impl = Gio.DBusExportedObject.wrapJSObject(TestIface, this);
-	this._impl.export(Gio.DBus.session, '/org/gnome/gjs/Test');
     },
 
     frobateStuff: function(args) {
@@ -114,10 +112,6 @@ Test.prototype = {
         throw Error("Exception!");
     },
 
-    thisDoesNotExist: function () {
-        /* We'll remove this later! */
-    },
-
     noInParameter: function() {
         return "Yes!";
     },
@@ -127,7 +121,7 @@ Test.prototype = {
     },
 
     emitSignal: function() {
-        this._impl.emit_signal('signalFoo', GLib.Variant.new('(s)', [ "foobar" ]));
+        this.emit_signal('signalFoo', "foobar");
     },
 
     noReturnValue: function() {
@@ -195,7 +189,7 @@ Test.prototype = {
 
     // variant
     get PropReadWrite() {
-        return GLib.Variant.new('s', this._propReadWrite.toString());
+        return GLib.Variant.new('u', this._propReadWrite);
     },
 
     set PropReadWrite(value) {
@@ -205,59 +199,90 @@ Test.prototype = {
     structArray: function () {
         return [[128, 123456], [42, 654321]];
     }
-};
+});
 
 var own_name_id;
 
+const ProxyClass = new Gio.DBusProxyClass({
+    Name: 'ProxyClass',
+    Interface: TestIface,
+});
+
+const SlimProxyClass = new Gio.DBusProxyClass({
+    Name: 'SlimProxyClass',
+    Interface: TestIface,
+    BusType: Gio.BusType.SESSION,
+    BusName: 'org.gnome.gjs.Test',
+    ObjectPath: '/org/gnome/gjs/Test'
+});
+
+var proxy, exporter;
+
 function testExportStuff() {
-    new Test();
+    exporter = new Test();
+    exporter.export(Gio.DBus.session, '/org/gnome/gjs/Test');
 
     own_name_id = Gio.DBus.session.own_name('org.gnome.gjs.Test',
 					    Gio.BusNameOwnerFlags.NONE,
-					    function(name) {
+					    function(connection, name) {
 						log("Acquired name " + name);
 						
 						Mainloop.quit('testGDBus');
 					    },
-					    function(name) {
+					    function(connection, name) {
 						log("Lost name " + name);
 					    });
 
     Mainloop.run('testGDBus');
 }
 
-const ProxyClass = Gio.DBusProxy.makeProxyWrapper(TestIface);
-var proxy;
-
 function testInitStuff() {
     var theError;
-    proxy = new ProxyClass(Gio.DBus.session,
-			   'org.gnome.gjs.Test',
-			   '/org/gnome/gjs/Test',
-			   function (obj, error) {
+    proxy = new ProxyClass({ g_connection: Gio.DBus.session,
+			     g_name: 'org.gnome.gjs.Test',
+			     g_object_path: '/org/gnome/gjs/Test',
+			     g_async_callback: function (obj, error) {
 			       theError = error;
 			       proxy = obj;
 
 			       Mainloop.quit('testGDBus');
-			   });
+			     } });
+
+    log(typeof(proxy._init) + " " + typeof(proxy._construct) + " " + typeof(proxy.frobateStuffRemote));
 
     Mainloop.run('testGDBus');
 
-    assertNotNull(proxy);
     assertNull(theError);
+    assertNotNull(proxy);
+}
+
+function testInitSlimStuff() {
+    var proxy, theError;
+    proxy = new SlimProxyClass({ g_async_callback: function (obj, error) {
+	theError = error;
+	proxy = obj;
+
+	Mainloop.quit('testGDBus');
+    }});
+
+    Mainloop.run('testGDBus');
+
+    assertNull(theError);
+    assertNotNull(proxy);
 }
 
 function testFrobateStuff() {
     let theResult, theExcp;
     proxy.frobateStuffRemote({}, function(result, excp) {
-	[theResult] = result;
+	theResult = result;
 	theExcp = excp;
 	Mainloop.quit('testGDBus');
     });
 
     Mainloop.run('testGDBus');
 
-    assertEquals("world", theResult.hello.deep_unpack());
+    assertNull(theExcp);
+    assertEquals("world", theResult[0].hello.deep_unpack());
 }
 
 /* excp must be exactly the exception thrown by the remote method
@@ -274,26 +299,6 @@ function testThrowException() {
 
     assertNull(theResult);
     assertNotNull(theExcp);
-}
-
-/* We check that the exception in the answer is not null when we try to call
- * a method that does not exist */
-function testDoesNotExist() {
-    let theResult, theExcp;
-
-    /* First remove the method from the object! */
-    delete Test.prototype.thisDoesNotExist;
-
-    proxy.thisDoesNotExistRemote(function (result, excp) {
-	theResult = result;
-	theExcp = excp;
-	Mainloop.quit('testGDBus');
-    });
-
-    Mainloop.run('testGDBus');
-
-    assertNotNull(theExcp);
-    assertNull(theResult);
 }
 
 function testNonJsonFrobateStuff() {
@@ -556,11 +561,26 @@ function testDictSignatures() {
     assertEquals(10.0, theResult['aDouble'].deep_unpack());
 }
 
-function testFinalize() {
-    // Not really needed, but if we don't cleanup
-    // memory checking will complain
+function testProperties() {
+    let readonly = proxy.PropReadOnly;
+    assertEquals(true, readonly);
 
+    let readwrite = proxy.PropReadWrite;
+    assertTrue(readwrite instanceof GLib.Variant);
+    assertEquals(PROP_READ_WRITE_INITIAL_VALUE, readwrite.deep_unpack());
+
+    // we cannot test property sets, as those happen asynchronously
+}
+
+function testFinalize() {
+    // clean everything up, before we destroy the context
+    // (otherwise, gio will report a name owner changed signal
+    // in idle, which will be called in some other test)
     Gio.DBus.session.unown_name(own_name_id);
+
+    proxy = exporter = null;
+    context = GLib.MainContext.default();
+    while (context.iteration(false));
 }
 
 gjstestRun();
