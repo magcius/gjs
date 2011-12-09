@@ -186,15 +186,21 @@ param_new_internal(JSContext *cx,
     gchar *blurb;
     GParamFlags flags;
 
-    if (argc < 5)
+    if (argc < 5) {
+        gjs_throw(cx, "Wrong number of arguments to GObject.ParamSpec._new_internal (expected 5)");
         return JS_FALSE;
+    }
 
     if (!JSVAL_IS_STRING(argv[0]) ||
         !JSVAL_IS_OBJECT(argv[1]) ||
         !JSVAL_IS_STRING(argv[2]) ||
         !JSVAL_IS_STRING(argv[3]) ||
-        !JSVAL_IS_INT(argv[4]))
+        !JSVAL_IS_INT(argv[4])) {
+        gjs_throw(cx, "Wrong type of arguments to GObject.ParamSpec._new_internal (expected string, GType object, string, string, number), "
+                  "were %s, %s, %s, %s, %s", JS_GetTypeName(cx, JS_TypeOfValue(cx, argv[0])), JS_GetTypeName(cx, JS_TypeOfValue(cx, argv[1])),
+                  JS_GetTypeName(cx, JS_TypeOfValue(cx, argv[2])), JS_GetTypeName(cx, JS_TypeOfValue(cx, argv[3])), JS_GetTypeName(cx, JS_TypeOfValue(cx, argv[4])));
         return JS_FALSE;
+    }
 
     prop_name = gjs_string_get_ascii(cx, argv[0]);
     prop_gtype = gjs_gtype_get_actual_gtype(cx, JSVAL_TO_OBJECT(argv[1]));
