@@ -76,7 +76,7 @@ function _proxyInvoker(methodName, sync, inSignature, arg_array) {
         }
     }
 
-    var inVariant = GLib.Variant.new('(' + inSignature.join('') + ')', arg_array);
+    var inVariant = new GLib.Variant('(' + inSignature.join('') + ')', arg_array);
 
     var asyncCallback = function (proxy, result) {
 	try {
@@ -117,11 +117,11 @@ function _propertyGetter(name) {
 }
 
 function _propertySetter(name, value, signature) {
-    let variant = GLib.Variant.new(signature, value);
+    let variant = new GLib.Variant(signature, value);
     this.set_cached_property(name, variant);
 
     this.call('org.freedesktop.DBus.Properties.Set',
-	      GLib.Variant.new('(ssv)',
+	      new GLib.Variant('(ssv)',
 			       [this.g_interface_name,
 				name, variant]),
 	      Gio.DBusCallFlags.NONE, -1, null,
@@ -339,7 +339,7 @@ const DBusImplementerBase = new Lang.Class({
 	    }
 	    if (retval === undefined) {
 		// undefined (no return value) is the empty tuple
-		retval = GLib.Variant.new_tuple([], 0);
+		retval = new GLib.Variant('()', []);
 	    }
 	    try {
 		if (!(retval instanceof GLib.Variant)) {
@@ -354,7 +354,7 @@ const DBusImplementerBase = new Lang.Class({
 			// into an Array
 			retval = [retval];
 		    }
-		    retval = GLib.Variant.new(outSignature, retval);
+		    retval = new GLib.Variant(outSignature, retval);
 		}
 		invocation.return_value(retval);
 	    } catch(e) {
@@ -377,7 +377,7 @@ const DBusImplementerBase = new Lang.Class({
 	let propInfo = klass.Interface.lookup_property(property_name);
 	let jsval = this[property_name];
 	if (jsval != undefined)
-	    return GLib.Variant.new(propInfo.signature, jsval);
+	    return new GLib.Variant(propInfo.signature, jsval);
 	else
 	    return null;
     },
@@ -406,7 +406,7 @@ const DBusImplementerBase = new Lang.Class({
 	if (argArray.length == 0)
 	    this._dbusImpl.emit_signal(signal_name, null);
 	else
-	    this._dbusImpl.emit_signal(signal_name, GLib.Variant.new(signalType, argArray));
+	    this._dbusImpl.emit_signal(signal_name, new GLib.Variant(signalType, argArray));
     },
 
     emit_property_changed: function(property_name, new_value) {
@@ -414,7 +414,7 @@ const DBusImplementerBase = new Lang.Class({
 
 	let propertyInfo = klass.Inteface.lookup_property(property_name);
 	if (new_value != undefined)
-	    new_value = GLib.Variant.new(propertyInfo.signature, new_value);
+	    new_value = new GLib.Variant(propertyInfo.signature, new_value);
 
 	this._dbusImpl.emit_property_changed(property_name, new_value);
     },

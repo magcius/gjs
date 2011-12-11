@@ -97,7 +97,7 @@ const Test = new Gio.DBusImplementerClass({
     },
 
     frobateStuff: function(args) {
-        return { hello: GLib.Variant.new('s', 'world') };
+        return { hello: new GLib.Variant('s', 'world') };
     },
 
     nonJsonFrobateStuff: function(i) {
@@ -172,7 +172,7 @@ const Test = new Gio.DBusImplementerClass({
     echoAsync: function(parameters, invocation) {
 	var [someString, someInt] = parameters;
         Mainloop.idle_add(function() {
-            invocation.return_value(GLib.Variant.new('(si)', [someString, someInt]));
+            invocation.return_value(new GLib.Variant('(si)', [someString, someInt]));
             return false;
         });
     },
@@ -189,7 +189,7 @@ const Test = new Gio.DBusImplementerClass({
 
     // variant
     get PropReadWrite() {
-        return GLib.Variant.new('u', this._propReadWrite);
+        return new GLib.Variant('u', this._propReadWrite);
     },
 
     set PropReadWrite(value) {
@@ -532,11 +532,11 @@ function testStructArray() {
 
 function testDictSignatures() {
     let someDict = {
-        aDouble: GLib.Variant.new('d', 10),
+        aDouble: new GLib.Variant('d', 10),
         // should be an integer after round trip
-        anInteger: GLib.Variant.new('i', 10.5),
+        anInteger: new GLib.Variant('i', 10.5),
         // should remain a double
-        aDoubleBeforeAndAfter: GLib.Variant.new('d', 10.5),
+        aDoubleBeforeAndAfter: new GLib.Variant('d', 10.5),
     };
     let theResult, theExcp;
     proxy.dictEchoRemote(someDict, function(result, excp) {
