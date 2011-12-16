@@ -368,19 +368,77 @@ object_instance_new_resolve(JSContext *context,
                      name,
                      obj,
                      priv,
-                     priv ? g_base_info_get_namespace (priv->info) : "",
-                     priv ? g_base_info_get_name (priv->info) : "",
+                     priv && priv->info ? g_base_info_get_namespace (priv->info) : "",
+                     priv && priv->info ? g_base_info_get_name (priv->info) : "",
                      priv ? priv->gobj : NULL,
                      (priv && priv->gobj) ? g_type_name_from_instance((GTypeInstance*) priv->gobj) : "(type unknown)");
 
     if (priv == NULL) {
-        throw_priv_is_null_error(context);
-        goto out; /* we are the wrong class */
+        /* We won't have a private until the initializer is called, so
+         * just defer to prototype chains in this case.
+         *
+         * This isn't too bad: either you get undefined if the field
+         * doesn't exist on any of the prototype chains, or whatever code
+         * will run afterwards will fail because of the "priv == NULL"
+         * check there.
+         */
+        ret = JS_TRUE;
+        goto out;
     }
 
     if (priv->gobj == NULL) {
         /* We are the prototype, so look for methods and other class properties */
         GIFunctionInfo *method_info;
+
+        /* If we have no GIRepository information (we're a JS GObject subclass),
+         * we need to look at exposing interfaces. Look up our interfaces through
+         * GType data, and then hope that *those* are introspectable. */
+        if (priv->info == NULL) {
+            GType *interfaces;
+            guint n_interfaces;
+            guint i;
+
+            ret = JS_TRUE;
+            interfaces = g_type_interfaces(priv->gtype, &n_interfaces);
+            for (i = 0; i < n_interfaces; i++) {
+                GIBaseInfo *base_info;
+                GIInterfaceInfo *iface_info;
+
+                base_info = g_irepository_find_by_gtype(g_irepository_get_default(),
+                                                        interfaces[i]);
+
+                if (base_info == NULL)
+                    continue;
+
+                if (g_base_info_get_type(base_info) != GI_INFO_TYPE_INTERFACE) {
+                    g_base_info_unref(base_info);
+                    continue;
+                }
+
+                iface_info = (GIInterfaceInfo*) base_info;
+
+                method_info = g_interface_info_find_method(iface_info, name);
+
+                g_base_info_unref(base_info);
+
+
+                if (method_info != NULL) {
+                    if (!gjs_define_function(context, obj, priv->gtype,
+                                             (GICallableInfo *)method_info))
+                        ret = JS_FALSE;
+                    else
+                        *objp = obj;
+
+                    g_base_info_unref( (GIBaseInfo*) method_info);
+                    break;
+                }
+            }
+
+            g_free(interfaces);
+
+            /* Found or not, there is nothing else to do here */
+            goto out;
+        }
 
         if (g_str_has_prefix (name, "do_")) {
             /* The only time we find a vfunc info is when we're the base
@@ -436,47 +494,6 @@ object_instance_new_resolve(JSContext *context,
                                                                  name,
                                                                  NULL);
 
-        /**
-         * Search through any interfaces implemented by the GType;
-         * this could be done better.  See
-         * https://bugzilla.gnome.org/show_bug.cgi?id=632922
-         */
-        if (method_info == NULL) {
-            GType *interfaces;
-            guint n_interfaces;
-            guint i;
-
-            interfaces = g_type_interfaces (priv->gtype, &n_interfaces);
-            for (i = 0; i < n_interfaces; i++) {
-                GIBaseInfo *base_info;
-                GIInterfaceInfo *iface_info;
-
-                base_info = g_irepository_find_by_gtype(g_irepository_get_default(),
-                                                        interfaces[i]);
-                if (!base_info)
-                    continue;
-
-                if (g_base_info_get_type(base_info) != GI_INFO_TYPE_INTERFACE) {
-                    g_base_info_unref(base_info);
-                    continue;
-                }
-
-                iface_info = (GIInterfaceInfo*) base_info;
-
-                method_info = g_interface_info_find_method(iface_info, name);
-
-                g_base_info_unref(base_info);
-
-                if (method_info != NULL) {
-                    gjs_debug(GJS_DEBUG_GOBJECT,
-                              "Found method %s in native interface %s",
-                              name, g_type_name(interfaces[i]));
-                    break;
-                }
-            }
-            g_free(interfaces);
-        }
-
         if (method_info != NULL) {
             const char *method_name;
 
@@ -502,33 +519,6 @@ object_instance_new_resolve(JSContext *context,
             *objp = obj; /* we defined the prop in obj */
 
             g_base_info_unref( (GIBaseInfo*) method_info);
-        }
-    } else {
-        /* We are an instance, not a prototype, so look for per-instance props that
-         * we want to define on the JSObject. Generally we do not want to cache
-         * these in JS, we want to always pull them from the GObject, or
-         * JS would not see any changes made from C. So we use the get/set prop hooks,
-         * not this resolve hook.
-         */
-
-        JSObject *proto;
-        ObjectInstance *proto_priv;
-
-        proto = JS_GetPrototype(context, obj);
-        proto_priv = priv_from_js(context, proto);
-        if (proto_priv->gtype == G_TYPE_INVALID) {
-            gjs_debug(GJS_DEBUG_GOBJECT,
-                      "storing gtype %s (%d) to prototype %p",
-                      G_OBJECT_TYPE_NAME(priv->gobj),
-                      (int) G_OBJECT_TYPE(priv->gobj),
-                      proto);
-            proto_priv->gtype = G_OBJECT_TYPE(priv->gobj);
-        } else if (proto_priv->gtype != G_OBJECT_TYPE(priv->gobj)) {
-            gjs_fatal("conflicting gtypes for prototype %s (%d) (was %s (%d))",
-                      G_OBJECT_TYPE_NAME(priv->gobj),
-                      (int) G_OBJECT_TYPE(priv->gobj),
-                      g_type_name(proto_priv->gtype),
-                      (int) proto_priv->gtype);
         }
     }
 
@@ -788,7 +778,8 @@ init_object_private (JSContext *context,
 
     priv->gtype = proto_priv->gtype;
     priv->info = proto_priv->info;
-    g_base_info_ref( (GIBaseInfo*) priv->info);
+    if (priv->info)
+        g_base_info_ref( (GIBaseInfo*) priv->info);
 
  out:
     JS_EndRequest(context);
@@ -949,14 +940,15 @@ object_instance_finalize(JSContext *context,
     if (priv == NULL)
         return; /* we are the prototype, not a real instance, so constructor never called */
 
-    TRACE(GJS_OBJECT_PROXY_FINALIZE(priv, priv->gobj, g_base_info_get_namespace ( (GIBaseInfo*) priv->info),
-                                    g_base_info_get_name ( (GIBaseInfo*) priv->info) ));
+    TRACE(GJS_OBJECT_PROXY_FINALIZE(priv, priv->gobj,
+                                    priv->info ? g_base_info_get_namespace ( (GIBaseInfo*) priv->info) : "",
+                                    priv->info ? g_base_info_get_name ( (GIBaseInfo*) priv->info) ) : g_type_name(priv->gtype));
 
     if (priv->gobj) {
         if (G_UNLIKELY (priv->gobj->ref_count <= 0)) {
             g_error("Finalizing proxy for an already freed object of type: %s.%s\n",
-                    g_base_info_get_namespace((GIBaseInfo*) priv->info),
-                    g_base_info_get_name((GIBaseInfo*) priv->info));
+                    priv->info ? g_base_info_get_namespace((GIBaseInfo*) priv->info) : "",
+                    priv->info ? g_base_info_get_name((GIBaseInfo*) priv->info) : g_type_name(priv->gtype));
         }
         set_js_obj(context, priv->gobj, NULL);
         g_object_remove_toggle_ref(priv->gobj, wrapped_gobj_toggle_notify,
@@ -1001,7 +993,7 @@ gjs_lookup_object_prototype(JSContext    *context,
 {
     JSObject *proto;
 
-    if (!gjs_define_object_class(context, NULL, gtype, NULL, &proto, NULL))
+    if (!gjs_define_object_class(context, NULL, gtype, NULL, &proto))
         return NULL;
     return proto;
 }
@@ -1032,8 +1024,8 @@ real_connect_func(JSContext *context,
     if (priv->gobj == NULL) {
         /* prototype, not an instance. */
         gjs_throw(context, "Can't connect to signals on %s.%s.prototype; only on instances",
-                     g_base_info_get_namespace( (GIBaseInfo*) priv->info),
-                     g_base_info_get_name( (GIBaseInfo*) priv->info));
+                  priv->info ? g_base_info_get_namespace( (GIBaseInfo*) priv->info) : "",
+                  priv->info ? g_base_info_get_name( (GIBaseInfo*) priv->info) : g_type_name(priv->gtype));
         return JS_FALSE;
     }
 
@@ -1125,8 +1117,8 @@ disconnect_func(JSContext *context,
     if (priv->gobj == NULL) {
         /* prototype, not an instance. */
         gjs_throw(context, "Can't disconnect signal on %s.%s.prototype; only on instances",
-                     g_base_info_get_namespace( (GIBaseInfo*) priv->info),
-                     g_base_info_get_name( (GIBaseInfo*) priv->info));
+                  priv->info ? g_base_info_get_namespace( (GIBaseInfo*) priv->info) : "",
+                  priv->info ? g_base_info_get_name( (GIBaseInfo*) priv->info) : g_type_name(priv->gtype));
         return JS_FALSE;
     }
 
@@ -1175,8 +1167,8 @@ emit_func(JSContext *context,
     if (priv->gobj == NULL) {
         /* prototype, not an instance. */
         gjs_throw(context, "Can't emit signal on %s.%s.prototype; only on instances",
-                     g_base_info_get_namespace( (GIBaseInfo*) priv->info),
-                     g_base_info_get_name( (GIBaseInfo*) priv->info));
+                  priv->info ? g_base_info_get_namespace( (GIBaseInfo*) priv->info) : "",
+                  priv->info ? g_base_info_get_name( (GIBaseInfo*) priv->info) : g_type_name(priv->gtype));
         return JS_FALSE;
     }
 
@@ -1289,8 +1281,13 @@ to_string_func(JSContext *context,
         return JS_FALSE; /* wrong class passed in */
     }
 
-    namespace = g_base_info_get_namespace( (GIBaseInfo*) priv->info);
-    name = g_base_info_get_name( (GIBaseInfo*) priv->info);
+    if (priv->info) {
+        namespace = g_base_info_get_namespace( (GIBaseInfo*) priv->info);
+        name = g_base_info_get_name( (GIBaseInfo*) priv->info);
+    } else {
+        namespace = "";
+        name = g_type_name(priv->gtype);
+    }
 
     if (priv->gobj == NULL) {
         strval = g_strdup_printf ("[object prototype of GIName:%s.%s jsobj@%p]", namespace, name, obj);
@@ -1383,36 +1380,12 @@ gjs_define_static_methods(JSContext    *context,
     return JS_TRUE;
 }
 
-static GIObjectInfo*
-get_base_info(JSContext *context,
-              GType      gtype)
-{
-    GIBaseInfo *info = NULL;
-
-    while (TRUE) {
-        info = g_irepository_find_by_gtype(g_irepository_get_default(),
-                                           gtype);
-        if (info != NULL)
-            break;
-         if (gtype == G_TYPE_OBJECT)
-            gjs_fatal("No introspection data on GObject - pretty much screwed");
-
-        gjs_debug(GJS_DEBUG_GOBJECT,
-                  "No introspection data on '%s' so trying parent type '%s'",
-                  g_type_name(gtype), g_type_name(g_type_parent(gtype)));
-
-        gtype = g_type_parent(gtype);
-    }
-    return (GIObjectInfo*)info;
-}
-
 JSBool
 gjs_define_object_class(JSContext     *context,
                         JSObject      *in_object,
                         GType          gtype,
                         JSObject     **constructor_p,
-                        JSObject     **prototype_p,
-                        GIObjectInfo **class_info_p)
+                        JSObject     **prototype_p)
 {
     const char *constructor_name;
     JSObject *prototype;
@@ -1421,21 +1394,21 @@ gjs_define_object_class(JSContext     *context,
     jsval value;
     ObjectInstance *priv;
     GIObjectInfo *info = NULL;
-    gboolean has_own_info = TRUE;
+    const char *ns;
 
     g_assert(gtype != G_TYPE_INVALID);
 
     info = (GIObjectInfo*)g_irepository_find_by_gtype(g_irepository_get_default(), gtype);
-    if (!info) {
-        has_own_info = FALSE;
-        info = get_base_info(context, gtype);
-    }
 
     if (!in_object) {
-        in_object = gjs_lookup_namespace_object(context, (GIBaseInfo*) info);
+        if (info)
+            in_object = gjs_lookup_namespace_object(context, (GIBaseInfo*) info);
+        else
+            in_object = gjs_lookup_private_namespace(context);
 
         if (!in_object) {
-            g_base_info_unref((GIBaseInfo*)info);
+            if (info)
+                g_base_info_unref((GIBaseInfo*)info);
             return FALSE;
         }
     }
@@ -1497,7 +1470,7 @@ gjs_define_object_class(JSContext     *context,
      * 'Object' (or whatever the first known ancestor is)
      *
      */
-    if (!has_own_info) {
+    if (!info) {
         constructor_name = g_type_name(gtype);
     } else {
         constructor_name = g_base_info_get_name((GIBaseInfo*) info);
@@ -1525,9 +1498,7 @@ gjs_define_object_class(JSContext     *context,
             if (constructor_p)
                 *constructor_p = constructor;
 
-            if (class_info_p)
-                *class_info_p = info;
-            else
+            if (info)
                 g_base_info_unref((GIBaseInfo*)info);
             return TRUE;
         }
@@ -1541,13 +1512,20 @@ gjs_define_object_class(JSContext     *context,
        parent_proto = gjs_lookup_object_prototype(context, parent_gtype);
     }
 
+    /* This is only used to disambiguate classes in the import global.
+     * We can safely set "unknown" if there is no info, as in that case
+     * the name is globally unique (it's a GType name). */
+    if (info)
+        ns = g_base_info_get_namespace((GIBaseInfo*) info);
+    else
+        ns = "unknown";
     prototype = gjs_init_class_dynamic(context, in_object,
                                        /* parent prototype JSObject* for
                                         * prototype; NULL for
                                         * Object.prototype
                                         */
                                        parent_proto,
-                                       g_base_info_get_namespace( (GIBaseInfo*) info),
+                                       ns,
                                        constructor_name,
                                        &gjs_object_instance_class,
                                        /* constructor for instances (NULL for
@@ -1572,7 +1550,8 @@ gjs_define_object_class(JSContext     *context,
 
     priv = g_slice_new0(ObjectInstance);
     priv->info = info;
-    g_base_info_ref( (GIBaseInfo*) priv->info);
+    if (info)
+        g_base_info_ref( (GIBaseInfo*) priv->info);
     priv->gtype = gtype;
     JS_SetPrivate(context, prototype, priv);
 
@@ -1588,12 +1567,15 @@ gjs_define_object_class(JSContext     *context,
        if (!JSVAL_IS_OBJECT(value)) {
             gjs_throw(context, "Property '%s' does not look like a constructor",
                       constructor_name);
-            g_base_info_unref((GIBaseInfo*)info);
+            if (info)
+                g_base_info_unref((GIBaseInfo*)info);
             return FALSE;
        }
 
        constructor = JSVAL_TO_OBJECT(value);
-       gjs_define_static_methods(context, constructor, gtype, info);
+
+       if (info)
+           gjs_define_static_methods(context, constructor, gtype, info);
     }
 
     value = OBJECT_TO_JSVAL(gjs_gtype_create_gtype_wrapper(context, gtype));
@@ -1609,9 +1591,7 @@ gjs_define_object_class(JSContext     *context,
     if (constructor_p)
         *constructor_p = constructor;
 
-    if (class_info_p)
-        *class_info_p = info;
-    else
+    if (info)
         g_base_info_unref((GIBaseInfo*)info);
     return TRUE;
 }
@@ -1693,14 +1673,13 @@ gjs_object_from_g_object(JSContext    *context,
     if (obj == NULL) {
         /* We have to create a wrapper */
         JSObject *proto;
-        GIObjectInfo *info;
 
         gjs_debug_marshal(GJS_DEBUG_GOBJECT,
                           "Wrapping %s with JSObject",
                           g_type_name_from_instance((GTypeInstance*) gobj));
 
 
-        if (!gjs_define_object_class(context, NULL, G_TYPE_FROM_INSTANCE(gobj), NULL, &proto, &info))
+        if (!gjs_define_object_class(context, NULL, G_TYPE_FROM_INSTANCE(gobj), NULL, &proto))
             return NULL;
 
         JS_BeginRequest(context);
@@ -1721,8 +1700,6 @@ gjs_object_from_g_object(JSContext    *context,
 
         /* see the comment in init_object_instance() for this */
         g_object_unref(gobj);
-
-        g_base_info_unref( (GIBaseInfo*) info);
 
         g_assert(peek_js_obj(context, gobj) == obj);
     }
@@ -1840,7 +1817,7 @@ gjs_hook_up_vfunc(JSContext *cx,
     gchar *name;
     JSObject *object;
     ObjectInstance *priv;
-    GType gtype;
+    GType gtype, info_gtype;
     GIObjectInfo *info;
     GIVFuncInfo *vfunc;
     gpointer implementor_vtable;
@@ -1860,6 +1837,18 @@ gjs_hook_up_vfunc(JSContext *cx,
     priv = priv_from_js(cx, object);
     gtype = priv->gtype;
     info = priv->info;
+
+    /* find the first class that actually has repository information */
+    info_gtype = gtype;
+    while (!info && info_gtype != G_TYPE_OBJECT) {
+        info_gtype = g_type_parent(info_gtype);
+
+        info = g_irepository_find_by_gtype(g_irepository_get_default(), info_gtype);
+    }
+
+    /* If we don't have 'info', we don't have the base class (GObject).
+     * This is awful, so abort now. */
+    g_assert(info != NULL);
 
     JS_SET_RVAL(cx, vp, JSVAL_VOID);
 
