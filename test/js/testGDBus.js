@@ -203,13 +203,13 @@ const Test = new Gio.DBusImplementerClass({
 
 var own_name_id;
 
-const ProxyClass = new Gio.DBusProxyClass({
-    Name: 'ProxyClass',
+const TestProxy = new Gio.DBusProxyClass({
+    Name: 'TestProxy',
     Interface: TestIface,
 });
 
-const SlimProxyClass = new Gio.DBusProxyClass({
-    Name: 'SlimProxyClass',
+const SlimTestProxy = new Gio.DBusProxyClass({
+    Name: 'SlimTestProxy',
     Interface: TestIface,
     BusType: Gio.BusType.SESSION,
     BusName: 'org.gnome.gjs.Test',
@@ -238,15 +238,15 @@ function testExportStuff() {
 
 function testInitStuff() {
     var theError;
-    proxy = new ProxyClass({ g_connection: Gio.DBus.session,
-			     g_name: 'org.gnome.gjs.Test',
-			     g_object_path: '/org/gnome/gjs/Test',
-			     g_async_callback: function (obj, error) {
-			       theError = error;
-			       proxy = obj;
+    proxy = new TestProxy({ g_connection: Gio.DBus.session,
+                            g_name: 'org.gnome.gjs.Test',
+                            g_object_path: '/org/gnome/gjs/Test',
+                            g_async_callback: function (obj, error) {
+                                theError = error;
+                                proxy = obj;
 
-			       Mainloop.quit('testGDBus');
-			     } });
+                                Mainloop.quit('testGDBus');
+                            } });
 
     log(typeof(proxy._init) + " " + typeof(proxy._construct) + " " + typeof(proxy.frobateStuffRemote));
 
@@ -258,7 +258,7 @@ function testInitStuff() {
 
 function testInitSlimStuff() {
     var proxy, theError;
-    proxy = new SlimProxyClass({ g_async_callback: function (obj, error) {
+    proxy = new SlimTestProxy({ g_async_callback: function (obj, error) {
 	theError = error;
 	proxy = obj;
 
