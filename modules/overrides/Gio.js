@@ -171,9 +171,15 @@ const DBusProxyClass = new Lang.Class({
     Name: 'DBusProxyClass',
     Extends: GObject.Class,
 
-    _init: function(params) {
+    _construct: function(params) {
+	/* params.Extends cannot be set in _init(), as
+	   GObject.Class._construct needs it */
 	params.Extends = Gio.DBusProxy;
 
+	return this.parent(params);
+    },
+
+    _init: function(params) {
 	if (!params.Interface)
 	    throw new TypeError('Interface must be specified in the declaration of a DBusProxyClass');
 	if (!(params.Interface instanceof Gio.DBusInterfaceInfo))
@@ -424,6 +430,13 @@ const DBusImplementerClass = new Lang.Class({
     Name: 'DBusImplementerClass',
     Extends: Lang.Class,
 
+    _construct: function(params) {
+	/* this must be set inside _construct, not _init */
+	params.Extends = DBusImplementerBase;
+
+	return this.parent(params);
+    },
+
     _init: function(params) {
 	if (!params.Interface)
 	    throw new TypeError('Interface must be specified in the declaration of a DBusImplementerClass');
@@ -433,8 +446,6 @@ const DBusImplementerClass = new Lang.Class({
 
 	this.Interface = params.Interface;
 	delete params.Interface;
-
-	params.Extends = DBusImplementerBase;
 
 	this.parent(params);
     }
