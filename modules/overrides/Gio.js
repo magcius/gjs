@@ -327,6 +327,12 @@ const DBusImplementerBase = new Lang.Class({
 	this._dbusImpl.connect('handle-method-call', Lang.bind(this, this._handleMethodCall));
 	this._dbusImpl.connect('handle-property-get', Lang.bind(this, this._handlePropertyGet));
 	this._dbusImpl.connect('handle-property-set', Lang.bind(this, this._handlePropertySet));
+
+        if (this.constructor.BusType && this.constructor.ObjectPath) {
+            let busType = this.constructor.BusType;
+            let objPath = this.constructor.ObjectPath;
+            this.export(Gio.bus_get_sync(busType, null), objPath);
+        }
     },
 
     _handleMethodCall: function(impl, method_name, parameters, invocation) {
@@ -453,6 +459,12 @@ const DBusImplementerClass = new Lang.Class({
 
 	this.Interface = params.Interface;
 	delete params.Interface;
+
+        this.BusType = params.BusType;
+        delete params.BusType;
+
+        this.ObjectPath = params.ObjectPath;
+        delete params.ObjectPath;
 
 	this.parent(params);
     }
