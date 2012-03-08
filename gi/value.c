@@ -25,6 +25,7 @@
 
 #include <util/log.h>
 
+#include "foreign.h"
 #include "value.h"
 #include "closure.h"
 #include "arg.h"
@@ -674,6 +675,13 @@ gjs_value_from_g_value_internal(JSContext    *context,
                       "No introspection information found for %s",
                       g_type_name(gtype));
             return JS_FALSE;
+        }
+
+        if (g_base_info_get_type(info) == GI_INFO_TYPE_STRUCT &&
+            g_struct_info_is_foreign((GIStructInfo*)info)) {
+            GIArgument arg;
+            arg.v_pointer = gboxed;
+            return gjs_struct_foreign_convert_from_g_argument(context, value_p, info, &arg);
         }
 
         switch (g_base_info_get_type(info)) {
