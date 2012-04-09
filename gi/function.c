@@ -206,12 +206,12 @@ gjs_callback_closure(ffi_cif *cif,
     JSContext *context;
     GjsCallbackTrampoline *trampoline;
     int i, n_args, n_jsargs, n_outargs;
-    jsval *jsargs, rval;
+    jsval *jsargs, this_object_val, rval;
     JSObject *this_object;
     GITypeInfo ret_type;
     gboolean success = FALSE;
     gboolean ret_type_is_void;
-    gboolean is_method;
+    gboolean is_method, is_signal;
 
     trampoline = data;
     g_assert(trampoline);
@@ -223,9 +223,9 @@ gjs_callback_closure(ffi_cif *cif,
     n_args = g_callable_info_get_n_args(trampoline->info);
 
     is_method = g_callable_info_is_method(trampoline->info);
+    is_signal = GI_IS_SIGNAL_INFO (trampoline->info);
 
     if (is_method) {
-        jsval this_object_val;
         if (!gjs_value_from_interface(context,
                                       &this_object_val,
                                       g_base_info_get_container(trampoline->info),
@@ -239,11 +239,18 @@ gjs_callback_closure(ffi_cif *cif,
         this_object = NULL;
     }
 
-    g_assert(n_args >= 0);
 
     n_outargs = 0;
-    jsargs = (jsval*)g_newa(jsval, n_args);
-    for (i = 0, n_jsargs = 0; i < n_args; i++) {
+    n_jsargs = 0;
+    jsargs = (jsval*)g_newa(jsval, n_args + (is_signal ? 1 : 0));
+
+    /* Signals get the "this" object as the first parameter as well. */
+    if (is_signal)
+        jsargs[n_jsargs++] = this_object_val;
+
+    g_assert(n_args >= 0);
+
+    for (i = 0; i < n_args; i++) {
         GIArgInfo arg_info;
         GITypeInfo type_info;
         GjsParamType param_type;
@@ -287,10 +294,12 @@ gjs_callback_closure(ffi_cif *cif,
                 break;
             }
             case PARAM_NORMAL:
+            case PARAM_NORMAL_NOCOPY:
                 if (!gjs_value_from_g_argument(context,
                                                &jsargs[n_jsargs++],
                                                &type_info,
-                                               args[i], FALSE))
+                                               args[i],
+                                               param_type == PARAM_NORMAL))
                     goto out;
                 break;
             default:
@@ -440,7 +449,8 @@ GjsCallbackTrampoline*
 gjs_callback_trampoline_new(JSContext      *context,
                             jsval           function,
                             GICallableInfo *callable_info,
-                            GIScopeType     scope)
+                            GIScopeType     scope,
+                            GSignalQuery   *signal_query)
 {
     GjsCallbackTrampoline *trampoline;
     int n_args, i;
@@ -458,9 +468,11 @@ gjs_callback_trampoline_new(JSContext      *context,
     g_base_info_ref((GIBaseInfo*)trampoline->info);
     trampoline->js_function = function;
 
-    if (g_base_info_get_type (trampoline->info) != GI_INFO_TYPE_VFUNC) {
+    if (GI_IS_FUNCTION_INFO (trampoline->info)) {
         trampoline->rooted = TRUE;
         JS_AddValueRoot(context, &trampoline->js_function);
+    } else {
+        trampoline->rooted = FALSE;
     }
 
     /* Analyze param types and directions, similarly to init_cached_function_data */
@@ -490,6 +502,9 @@ gjs_callback_trampoline_new(JSContext      *context,
         if (type_tag == GI_TYPE_TAG_INTERFACE) {
             GIBaseInfo* interface_info;
             GIInfoType interface_type;
+
+            if (signal_query && (signal_query->param_types[i - 1] & G_SIGNAL_TYPE_STATIC_SCOPE) != 0)
+                trampoline->param_types[i] = PARAM_NORMAL_NOCOPY;
 
             interface_info = g_type_info_get_interface(&type_info);
             interface_type = g_base_info_get_type(interface_info);
@@ -785,7 +800,8 @@ gjs_invoke_c_function(JSContext      *context,
                     trampoline = gjs_callback_trampoline_new(context,
                                                              value,
                                                              callable_info,
-                                                             scope);
+                                                             scope,
+                                                             NULL);
                     closure = trampoline->closure;
                     g_base_info_unref(callable_info);
                 }
@@ -852,6 +868,7 @@ gjs_invoke_c_function(JSContext      *context,
                 break;
             }
             case PARAM_NORMAL:
+            case PARAM_NORMAL_NOCOPY:
                 /* Ok, now just convert argument normally */
                 g_assert_cmpuint(js_arg_pos, <, js_argc);
                 if (!gjs_value_to_arg(context, js_argv[js_arg_pos], &arg_info,
@@ -1054,7 +1071,8 @@ release:
                                                      arg)) {
                     postinvoke_release_failed = TRUE;
                 }
-            } else if (param_type == PARAM_NORMAL) {
+            } else if (param_type == PARAM_NORMAL ||
+                       param_type == PARAM_NORMAL_NOCOPY) {
                 if (!gjs_g_argument_release_in_arg(context,
                                                    transfer,
                                                    &arg_type_info,
@@ -1501,6 +1519,7 @@ init_cached_function_data (JSContext      *context,
         }
 
         if (function->param_types[i] == PARAM_NORMAL ||
+            function->param_types[i] == PARAM_NORMAL_NOCOPY ||
             function->param_types[i] == PARAM_ARRAY) {
             if (direction == GI_DIRECTION_IN || direction == GI_DIRECTION_INOUT)
                 function->expected_js_argc += 1;

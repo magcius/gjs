@@ -37,7 +37,8 @@ typedef enum {
     PARAM_NORMAL,
     PARAM_SKIPPED,
     PARAM_ARRAY,
-    PARAM_CALLBACK
+    PARAM_CALLBACK,
+    PARAM_NORMAL_NOCOPY
 } GjsParamType;
 
 typedef struct {
@@ -55,7 +56,8 @@ typedef struct {
 GjsCallbackTrampoline* gjs_callback_trampoline_new(JSContext      *context,
                                                    jsval           function,
                                                    GICallableInfo *callable_info,
-                                                   GIScopeType     scope);
+                                                   GIScopeType     scope,
+                                                   GSignalQuery   *signal_query);
 
 void gjs_callback_trampoline_unref(GjsCallbackTrampoline *trampoline);
 void gjs_callback_trampoline_ref(GjsCallbackTrampoline *trampoline);

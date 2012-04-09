@@ -351,6 +351,35 @@ find_vfunc_on_parent(GIObjectInfo *info,
     return vfunc;
 }
 
+static GISignalInfo *
+find_signal_on_parent(GIObjectInfo *info,
+                      const char   *name)
+{
+    GISignalInfo *signal = NULL;
+    GIObjectInfo *parent, *old_parent;
+
+    /* ref the first info so that we don't destroy
+     * it when unrefing parents later */
+    g_base_info_ref(info);
+    parent = info;
+
+    signal = g_object_info_find_signal_using_interfaces(parent, name, NULL);
+    while (!signal && parent) {
+        old_parent = parent;
+        parent = g_object_info_get_parent(old_parent);
+        if (!parent)
+            break;
+
+        g_base_info_unref(old_parent);
+        signal = g_object_info_find_signal_using_interfaces(parent, name, NULL);
+    }
+
+    if (parent)
+        g_base_info_unref(parent);
+
+    return signal;
+}
+
 static JSBool
 object_instance_new_resolve_no_info(JSContext       *context,
                                     JSObject        *obj,
@@ -1097,6 +1126,9 @@ real_connect_func(JSContext *context,
     guint signal_id;
     char *signal_name;
     GQuark signal_detail;
+    GISignalInfo *signal_info = NULL;
+    GSignalQuery signal_query = { 0, };
+    GjsCallbackTrampoline *trampoline;
     jsval retval;
     JSBool ret = JS_FALSE;
 
@@ -1143,14 +1175,22 @@ real_connect_func(JSContext *context,
         goto out;
     }
 
-    closure = gjs_closure_new_for_signal(context, JSVAL_TO_OBJECT(argv[1]), "signal callback", signal_id);
+    signal_info = find_signal_on_parent(priv->info, g_signal_name(signal_id));
+    g_signal_query(signal_id, &signal_query);
+    g_assert ((gint) signal_query.n_params == g_callable_info_get_n_args(signal_info));
+
+    trampoline = gjs_callback_trampoline_new(context, argv[1], signal_info,
+                                             GI_SCOPE_TYPE_CALL, &signal_query);
+    closure = g_cclosure_new(G_CALLBACK(trampoline->closure), trampoline,
+                             (GClosureNotify) gjs_callback_trampoline_unref);
     if (closure == NULL)
         goto out;
 
-    id = g_signal_connect_closure(priv->gobj,
-                                  signal_name,
-                                  closure,
-                                  after);
+    id = g_signal_connect_closure_by_id(priv->gobj,
+                                        signal_id,
+                                        signal_detail,
+                                        closure,
+                                        after);
 
     if (!JS_NewNumberValue(context, id, &retval)) {
         g_signal_handler_disconnect(priv->gobj, id);
@@ -1161,6 +1201,9 @@ real_connect_func(JSContext *context,
 
     ret = JS_TRUE;
  out:
+    if (signal_info)
+        g_base_info_unref (signal_info);
+
     g_free(signal_name);
     return ret;
 }
@@ -1982,7 +2025,7 @@ gjs_hook_up_vfunc(JSContext *cx,
         method_ptr = G_STRUCT_MEMBER_P(implementor_vtable, offset);
 
         trampoline = gjs_callback_trampoline_new(cx, OBJECT_TO_JSVAL(function), vfunc,
-                                                 GI_SCOPE_TYPE_NOTIFIED);
+                                                 GI_SCOPE_TYPE_NOTIFIED, NULL);
 
         *((ffi_closure **)method_ptr) = trampoline->closure;
 
