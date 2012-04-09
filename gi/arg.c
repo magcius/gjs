@@ -2266,6 +2266,129 @@ gjs_object_from_g_hash (JSContext  *context,
 }
 
 JSBool
+gjs_value_from_interface (JSContext  *context,
+                          jsval      *value_p,
+                          GIBaseInfo *info,
+                          GArgument  *arg,
+                          gboolean    copy_structs)
+{
+    jsval value = JSVAL_VOID;
+    GIInfoType info_type = g_base_info_get_type(info);
+    GType gtype;
+
+    if (info_type == GI_INFO_TYPE_UNRESOLVED) {
+        gjs_throw(context,
+                  "Unable to resolve arg type '%s'",
+                  g_base_info_get_name(info));
+        goto out;
+    }
+
+    /* Enum/Flags are aren't pointer types, unlike the other interface subtypes */
+    if (info_type == GI_INFO_TYPE_ENUM) {
+        gint64 value_int64 = _gjs_enum_from_int ((GIEnumInfo *)info, arg->v_int);
+
+        if (_gjs_enum_value_is_valid(context, (GIEnumInfo *)info, value_int64)) {
+            jsval tmp;
+            if (JS_NewNumberValue(context, value_int64, &tmp))
+                value = tmp;
+        }
+        goto out;
+    } else if (info_type == GI_INFO_TYPE_FLAGS) {
+        gint64 value_int64 = _gjs_enum_from_int ((GIEnumInfo *)info, arg->v_int);
+
+        gtype = g_registered_type_info_get_g_type((GIRegisteredTypeInfo*)info);
+        if (_gjs_flags_value_is_valid(context, gtype, value_int64)) {
+            jsval tmp;
+            if (JS_NewNumberValue(context, value_int64, &tmp))
+                value = tmp;
+        }
+        goto out;
+    } else if (info_type == GI_INFO_TYPE_STRUCT &&
+               g_struct_info_is_foreign((GIStructInfo*)info)) {
+        return gjs_struct_foreign_convert_from_g_argument(context, value_p, info, arg);
+    }
+
+    /* Everything else is a pointer type, NULL is the easy case */
+    if (arg->v_pointer == NULL) {
+        value = JSVAL_NULL;
+        goto out;
+    }
+
+    gtype = g_registered_type_info_get_g_type((GIRegisteredTypeInfo*)info);
+    gjs_debug_marshal(GJS_DEBUG_GFUNCTION,
+                      "gtype of INTERFACE is %s", g_type_name(gtype));
+
+    /* Test GValue before Struct, or it will be handled as the latter */
+    if (g_type_is_a(gtype, G_TYPE_VALUE)) {
+        if (!gjs_value_from_g_value(context, &value, arg->v_pointer))
+            value = JSVAL_VOID; /* Make sure error is flagged */
+        goto out;
+
+    }
+
+    if (info_type == GI_INFO_TYPE_STRUCT || info_type == GI_INFO_TYPE_BOXED) {
+        GjsBoxedCreationFlags flags;
+        JSObject *obj;
+
+        if (copy_structs)
+            flags = GJS_BOXED_CREATION_NONE;
+        else if (g_type_is_a(gtype, G_TYPE_VARIANT))
+            flags = GJS_BOXED_CREATION_NONE;
+        else
+            flags = GJS_BOXED_CREATION_NO_COPY;
+
+        obj = gjs_boxed_from_c_struct(context,
+                                      (GIStructInfo *)info,
+                                      arg->v_pointer,
+                                      flags);
+        if (obj)
+            value = OBJECT_TO_JSVAL(obj);
+
+        goto out;
+    } else if (info_type == GI_INFO_TYPE_UNION) {
+        JSObject *obj;
+        obj = gjs_union_from_c_union(context, (GIUnionInfo *)info, arg->v_pointer);
+        if (obj)
+            value = OBJECT_TO_JSVAL(obj);
+
+        goto out;
+    } else if (g_type_is_a(gtype, G_TYPE_BOXED) ||
+               g_type_is_a(gtype, G_TYPE_ENUM) ||
+               g_type_is_a(gtype, G_TYPE_FLAGS)) {
+        /* Should have been handled above */
+        gjs_throw(context,
+                  "Type %s registered for unexpected interface_type %d",
+                  g_type_name(gtype),
+                  info_type);
+        return JS_FALSE;
+    } else if (g_type_is_a(gtype, G_TYPE_PARAM)) {
+        JSObject *obj;
+        obj = gjs_param_from_g_param(context, G_PARAM_SPEC(arg->v_pointer));
+        if (obj)
+            value = OBJECT_TO_JSVAL(obj);
+        goto out;
+    } else if (g_type_is_a(gtype, G_TYPE_OBJECT) || g_type_is_a(gtype, G_TYPE_INTERFACE)) {
+        JSObject *obj;
+        obj = gjs_object_from_g_object(context, G_OBJECT(arg->v_pointer));
+        if (obj)
+            value = OBJECT_TO_JSVAL(obj);
+        goto out;
+    } else if (gtype == G_TYPE_NONE) {
+        gjs_throw(context, "Unexpected unregistered type packing GArgument into jsval");
+    } else {
+        gjs_throw(context, "Unhandled GType %s packing GArgument into jsval",
+                  g_type_name(gtype));
+    }
+
+ out:
+    if (JSVAL_IS_VOID(value))
+        return JS_FALSE;
+
+    *value_p = value;
+    return JS_TRUE;
+}
+
+JSBool
 gjs_value_from_g_argument (JSContext  *context,
                            jsval      *value_p,
                            GITypeInfo *type_info,
@@ -2369,133 +2492,20 @@ gjs_value_from_g_argument (JSContext  *context,
 
     case GI_TYPE_TAG_INTERFACE:
         {
-            jsval value;
-            GIBaseInfo* interface_info;
-            GIInfoType interface_type;
-            GType gtype;
+            JSBool ret;
+            GIBaseInfo *interface_info;
 
             interface_info = g_type_info_get_interface(type_info);
             g_assert(interface_info != NULL);
 
-            value = JSVAL_VOID;
+            ret = gjs_value_from_interface(context,
+                                           value_p,
+                                           interface_info,
+                                           arg,
+                                           copy_structs);
 
-            interface_type = g_base_info_get_type(interface_info);
-
-            if (interface_type == GI_INFO_TYPE_UNRESOLVED) {
-                gjs_throw(context,
-                          "Unable to resolve arg type '%s'",
-                          g_base_info_get_name(interface_info));
-                goto out;
-            }
-
-            /* Enum/Flags are aren't pointer types, unlike the other interface subtypes */
-            if (interface_type == GI_INFO_TYPE_ENUM) {
-                gint64 value_int64 = _gjs_enum_from_int ((GIEnumInfo *)interface_info, arg->v_int);
-
-                if (_gjs_enum_value_is_valid(context, (GIEnumInfo *)interface_info, value_int64)) {
-                    jsval tmp;
-                    if (JS_NewNumberValue(context, value_int64, &tmp))
-                        value = tmp;
-                }
-
-                goto out;
-            } else if (interface_type == GI_INFO_TYPE_FLAGS) {
-                gint64 value_int64 = _gjs_enum_from_int ((GIEnumInfo *)interface_info, arg->v_int);
-
-                gtype = g_registered_type_info_get_g_type((GIRegisteredTypeInfo*)interface_info);
-                if (_gjs_flags_value_is_valid(context, gtype, value_int64)) {
-                    jsval tmp;
-                    if (JS_NewNumberValue(context, value_int64, &tmp))
-                        value = tmp;
-                }
-
-                goto out;
-            } else if (interface_type == GI_INFO_TYPE_STRUCT &&
-                       g_struct_info_is_foreign((GIStructInfo*)interface_info)) {
-                return gjs_struct_foreign_convert_from_g_argument(context, value_p, interface_info, arg);
-            }
-
-            /* Everything else is a pointer type, NULL is the easy case */
-            if (arg->v_pointer == NULL) {
-                value = JSVAL_NULL;
-                goto out;
-            }
-
-            gtype = g_registered_type_info_get_g_type((GIRegisteredTypeInfo*)interface_info);
-            gjs_debug_marshal(GJS_DEBUG_GFUNCTION,
-                              "gtype of INTERFACE is %s", g_type_name(gtype));
-
-
-            /* Test GValue before Struct, or it will be handled as the latter */
-            if (g_type_is_a(gtype, G_TYPE_VALUE)) {
-                if (!gjs_value_from_g_value(context, &value, arg->v_pointer))
-                    value = JSVAL_VOID; /* Make sure error is flagged */
-
-                goto out;
-            }
-
-            if (interface_type == GI_INFO_TYPE_STRUCT || interface_type == GI_INFO_TYPE_BOXED) {
-                JSObject *obj;
-                GjsBoxedCreationFlags flags;
-
-                if (copy_structs)
-                    flags = GJS_BOXED_CREATION_NONE;
-                else if (g_type_is_a(gtype, G_TYPE_VARIANT))
-                    flags = GJS_BOXED_CREATION_NONE;
-                else
-                    flags = GJS_BOXED_CREATION_NO_COPY;
-
-                obj = gjs_boxed_from_c_struct(context,
-                                              (GIStructInfo *)interface_info,
-                                              arg->v_pointer,
-                                              flags);
-
-                if (obj)
-                    value = OBJECT_TO_JSVAL(obj);
-
-                goto out;
-            } else if (interface_type == GI_INFO_TYPE_UNION) {
-                JSObject *obj;
-                obj = gjs_union_from_c_union(context, (GIUnionInfo *)interface_info, arg->v_pointer);
-                if (obj)
-                        value = OBJECT_TO_JSVAL(obj);
-
-                goto out;
-            }
-
-            if (g_type_is_a(gtype, G_TYPE_OBJECT) || g_type_is_a(gtype, G_TYPE_INTERFACE)) {
-                JSObject *obj;
-                obj = gjs_object_from_g_object(context, G_OBJECT(arg->v_pointer));
-                if (obj)
-                    value = OBJECT_TO_JSVAL(obj);
-            } else if (g_type_is_a(gtype, G_TYPE_BOXED) ||
-                       g_type_is_a(gtype, G_TYPE_ENUM) ||
-                       g_type_is_a(gtype, G_TYPE_FLAGS)) {
-                /* Should have been handled above */
-                gjs_throw(context,
-                          "Type %s registered for unexpected interface_type %d",
-                          g_type_name(gtype),
-                          interface_type);
-                return JS_FALSE;
-            } else if (g_type_is_a(gtype, G_TYPE_PARAM)) {
-                JSObject *obj;
-                obj = gjs_param_from_g_param(context, G_PARAM_SPEC(arg->v_pointer));
-                if (obj)
-                    value = OBJECT_TO_JSVAL(obj);
-            } else if (gtype == G_TYPE_NONE) {
-                gjs_throw(context, "Unexpected unregistered type packing GArgument into jsval");
-            } else {
-                gjs_throw(context, "Unhandled GType %s packing GArgument into jsval",
-                          g_type_name(gtype));
-            }
-
-         out:
-            g_base_info_unref( (GIBaseInfo*) interface_info);
-
-            if (JSVAL_IS_VOID(value))
-                return JS_FALSE;
-
-            *value_p = value;
+            g_base_info_unref(interface_info);
+            return ret;
         }
         break;
 

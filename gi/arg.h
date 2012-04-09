@@ -66,6 +66,11 @@ JSBool gjs_value_to_g_argument (JSContext      *context,
                                 gboolean        may_be_null,
                                 GArgument      *arg);
 
+JSBool gjs_value_from_interface (JSContext  *context,
+                                 jsval      *value_p,
+                                 GIBaseInfo *info,
+                                 GArgument  *arg,
+                                 gboolean   copy_structs);
 JSBool gjs_value_from_g_argument (JSContext  *context,
                                   jsval      *value_p,
                                   GITypeInfo *type_info,

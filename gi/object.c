@@ -1974,28 +1974,18 @@ gjs_hook_up_vfunc(JSContext *cx,
 
     find_vfunc_info(cx, gtype, vfunc, name, &implementor_vtable, &field_info);
     if (field_info != NULL) {
-        GITypeInfo *type_info;
-        GIBaseInfo *interface_info;
-        GICallbackInfo *callback_info;
         gint offset;
         gpointer method_ptr;
         GjsCallbackTrampoline *trampoline;
 
-        type_info = g_field_info_get_type(field_info);
-
-        interface_info = g_type_info_get_interface(type_info);
-
-        callback_info = (GICallbackInfo*)interface_info;
         offset = g_field_info_get_offset(field_info);
         method_ptr = G_STRUCT_MEMBER_P(implementor_vtable, offset);
 
-        trampoline = gjs_callback_trampoline_new(cx, OBJECT_TO_JSVAL(function), callback_info,
-                                                 GI_SCOPE_TYPE_NOTIFIED, TRUE);
+        trampoline = gjs_callback_trampoline_new(cx, OBJECT_TO_JSVAL(function), vfunc,
+                                                 GI_SCOPE_TYPE_NOTIFIED);
 
         *((ffi_closure **)method_ptr) = trampoline->closure;
 
-        g_base_info_unref(interface_info);
-        g_base_info_unref(type_info);
         g_base_info_unref(field_info);
     }
 

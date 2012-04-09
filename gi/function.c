@@ -122,7 +122,7 @@ gjs_callback_trampoline_unref(GjsCallbackTrampoline *trampoline)
 
         context = gjs_runtime_get_current_context(trampoline->runtime);
 
-        if (!trampoline->is_vfunc)
+        if (trampoline->rooted)
             JS_RemoveValueRoot(context, &trampoline->js_function);
         g_callable_info_free_closure(trampoline->info, trampoline->closure);
         g_base_info_unref( (GIBaseInfo*) trampoline->info);
@@ -211,6 +211,7 @@ gjs_callback_closure(ffi_cif *cif,
     GITypeInfo ret_type;
     gboolean success = FALSE;
     gboolean ret_type_is_void;
+    gboolean is_method;
 
     trampoline = data;
     g_assert(trampoline);
@@ -220,6 +221,23 @@ gjs_callback_closure(ffi_cif *cif,
     JS_BeginRequest(context);
 
     n_args = g_callable_info_get_n_args(trampoline->info);
+
+    is_method = g_callable_info_is_method(trampoline->info);
+
+    if (is_method) {
+        jsval this_object_val;
+        if (!gjs_value_from_interface(context,
+                                      &this_object_val,
+                                      g_base_info_get_container(trampoline->info),
+                                      args[0],
+                                      FALSE))
+            goto out;
+        g_assert(JSVAL_IS_OBJECT(this_object_val));
+        this_object = JSVAL_TO_OBJECT(this_object_val);
+        args++;
+    } else {
+        this_object = NULL;
+    }
 
     g_assert(n_args >= 0);
 
@@ -278,14 +296,6 @@ gjs_callback_closure(ffi_cif *cif,
             default:
                 g_assert_not_reached();
         }
-    }
-
-    if (trampoline->is_vfunc) {
-        this_object = JSVAL_TO_OBJECT(jsargs[0]);
-        jsargs++;
-        n_jsargs--;
-    } else {
-        this_object = NULL;
     }
 
     if (!JS_CallFunctionValue(context,
@@ -430,8 +440,7 @@ GjsCallbackTrampoline*
 gjs_callback_trampoline_new(JSContext      *context,
                             jsval           function,
                             GICallableInfo *callable_info,
-                            GIScopeType     scope,
-                            gboolean        is_vfunc)
+                            GIScopeType     scope)
 {
     GjsCallbackTrampoline *trampoline;
     int n_args, i;
@@ -448,8 +457,11 @@ gjs_callback_trampoline_new(JSContext      *context,
     trampoline->info = callable_info;
     g_base_info_ref((GIBaseInfo*)trampoline->info);
     trampoline->js_function = function;
-    if (!is_vfunc)
+
+    if (g_base_info_get_type (trampoline->info) != GI_INFO_TYPE_VFUNC) {
+        trampoline->rooted = TRUE;
         JS_AddValueRoot(context, &trampoline->js_function);
+    }
 
     /* Analyze param types and directions, similarly to init_cached_function_data */
     n_args = g_callable_info_get_n_args(trampoline->info);
@@ -511,7 +523,6 @@ gjs_callback_trampoline_new(JSContext      *context,
                                                           gjs_callback_closure, trampoline);
 
     trampoline->scope = scope;
-    trampoline->is_vfunc = is_vfunc;
 
     return trampoline;
 }
@@ -774,8 +785,7 @@ gjs_invoke_c_function(JSContext      *context,
                     trampoline = gjs_callback_trampoline_new(context,
                                                              value,
                                                              callable_info,
-                                                             scope,
-                                                             FALSE);
+                                                             scope);
                     closure = trampoline->closure;
                     g_base_info_unref(callable_info);
                 }
